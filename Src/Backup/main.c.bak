@@ -71,8 +71,6 @@ DMA_HandleTypeDef hdma_sdmmc1_rx;
 
 SPDIFRX_HandleTypeDef hspdif;
 
-SPI_HandleTypeDef hspi2;
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -86,12 +84,16 @@ UART_HandleTypeDef huart6;
 SDRAM_HandleTypeDef hsdram1;
 
 osThreadId defaultTaskHandle;
+osThreadId sdReadTaskHandle;
+osSemaphoreId sdReadBinarySemHandle;
 /* USER CODE BEGIN PV */
 FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
 char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
 
+uint8_t b1PushCounter;
+uint16_t b1LongPushCounter;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,7 +113,6 @@ static void MX_RTC_Init(void);
 static void MX_SAI2_Init(void);
 static void MX_SDMMC1_SD_Init(void);
 static void MX_SPDIFRX_Init(void);
-static void MX_SPI2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
@@ -121,6 +122,7 @@ static void MX_TIM12_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 void StartDefaultTask(void const * argument);
+void StartSdReadTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -174,7 +176,6 @@ int main(void)
   MX_SAI2_Init();
   MX_SDMMC1_SD_Init();
   MX_SPDIFRX_Init();
-  MX_SPI2_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
@@ -184,12 +185,18 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  b1PushCounter = 0;
+  b1LongPushCounter = 0;
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
+
+  /* Create the semaphores(s) */
+  /* definition and creation of sdReadBinarySem */
+  osSemaphoreDef(sdReadBinarySem);
+  sdReadBinarySemHandle = osSemaphoreCreate(osSemaphore(sdReadBinarySem), 1);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -207,6 +214,10 @@ int main(void)
   /* definition and creation of defaultTask */
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 4096);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* definition and creation of sdReadTask */
+  osThreadDef(sdReadTask, StartSdReadTask, osPriorityNormal, 0, 1024);
+  sdReadTaskHandle = osThreadCreate(osThread(sdReadTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -802,7 +813,7 @@ static void MX_SAI2_Init(void)
   hsai_BlockB2.Init.MonoStereoMode = SAI_STEREOMODE;
   hsai_BlockB2.Init.CompandingMode = SAI_NOCOMPANDING;
   hsai_BlockB2.Init.TriState = SAI_OUTPUT_NOTRELEASED;
-  hsai_BlockB2.FrameInit.FrameLength = 8;
+  hsai_BlockB2.FrameInit.FrameLength = 24;
   hsai_BlockB2.FrameInit.ActiveFrameLength = 1;
   hsai_BlockB2.FrameInit.FSDefinition = SAI_FS_STARTFRAME;
   hsai_BlockB2.FrameInit.FSPolarity = SAI_FS_ACTIVE_LOW;
@@ -882,46 +893,6 @@ static void MX_SPDIFRX_Init(void)
   /* USER CODE BEGIN SPDIFRX_Init 2 */
 
   /* USER CODE END SPDIFRX_Init 2 */
-
-}
-
-/**
-  * @brief SPI2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI2_Init(void)
-{
-
-  /* USER CODE BEGIN SPI2_Init 0 */
-
-  /* USER CODE END SPI2_Init 0 */
-
-  /* USER CODE BEGIN SPI2_Init 1 */
-
-  /* USER CODE END SPI2_Init 1 */
-  /* SPI2 parameter configuration*/
-  hspi2.Instance = SPI2;
-  hspi2.Init.Mode = SPI_MODE_MASTER;
-  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi2.Init.CRCPolynomial = 7;
-  hspi2.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi2.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI2_Init 2 */
-
-  /* USER CODE END SPI2_Init 2 */
 
 }
 
@@ -1433,7 +1404,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(OTG_FS_PowerSwitchOn_GPIO_Port, OTG_FS_PowerSwitchOn_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOI, ARDUINO_D7_Pin|ARDUINO_D8_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOI, ARDUINO_D7_Pin|ARDUINO_D8_Pin|GPIO_PIN_1, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LCD_BL_CTRL_GPIO_Port, LCD_BL_CTRL_Pin, GPIO_PIN_SET);
@@ -1490,8 +1461,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(OTG_FS_PowerSwitchOn_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ARDUINO_D7_Pin ARDUINO_D8_Pin LCD_DISP_Pin */
-  GPIO_InitStruct.Pin = ARDUINO_D7_Pin|ARDUINO_D8_Pin|LCD_DISP_Pin;
+  /*Configure GPIO pins : ARDUINO_D7_Pin ARDUINO_D8_Pin PI1 LCD_DISP_Pin */
+  GPIO_InitStruct.Pin = ARDUINO_D7_Pin|ARDUINO_D8_Pin|GPIO_PIN_1|LCD_DISP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1528,6 +1499,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DCMI_PWR_EN_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LCD_INT_Pin */
   GPIO_InitStruct.Pin = LCD_INT_Pin;
@@ -1588,9 +1565,41 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF10_OTG_HS;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : ARDUINO_MISO_D12_Pin ARDUINO_MOSI_PWM_D11_Pin */
+  GPIO_InitStruct.Pin = ARDUINO_MISO_D12_Pin|ARDUINO_MOSI_PWM_D11_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
+/**
+  * @brief  EXTI line detection callbacks.
+  * @param  GPIO_Pin Specifies the pins connected EXTI line
+  * @retval None
+  */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	/* Prevent unused argument(s) compilation warning */
+	UNUSED(GPIO_Pin);
+
+	/* NOTE: This function Should not be modified, when the callback is needed,
+		   the HAL_GPIO_EXTI_Callback could be implemented in the user file
+	*/
+
+	if(GPIO_Pin == GPIO_PIN_11){
+		b1PushCounter = 10;
+		b1LongPushCounter = 2000;
+		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
+	}
+}
 
 /* USER CODE END 4 */
 
@@ -1620,95 +1629,162 @@ void StartDefaultTask(void const * argument)
 
   /*##-1- Link the micro SD disk I/O driver ##################################*/
 //  if(FATFS_LinkDriver(&SD_Driver, SDPath) == 0)
-  {
-    /*##-2- Register the file system object to the FatFs module ##############*/
-    if(f_mount(&SDFatFs, (TCHAR const*)SDPath, 0) != FR_OK)
-    {
-      /* FatFs Initialization Error */
-      Error_Handler();
-    }
-    else
-    {
-      /*##-3- Create a FAT file system (format) on the logical drive #########*/
-      /* WARNING: Formatting the uSD card will delete all content on the device */
-      if(f_mkfs((TCHAR const*)SDPath, FM_ANY, 0, workBuffer, sizeof(workBuffer)) != FR_OK)
-      {
-        /* FatFs Format Error */
-        Error_Handler();
-      }
-      else
-      {
-        /*##-4- Create and Open a new text file object with write access #####*/
-        if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
-        {
-          /* 'STM32.TXT' file Open for write Error */
-          Error_Handler();
-        }
-        else
-        {
-          /*##-5- Write data to the text file ################################*/
-          res = f_write(&MyFile, wtext, sizeof(wtext), (void *)&byteswritten);
+//  {
+	/*##-2- Register the file system object to the FatFs module ##############*/
+	if(f_mount(&SDFatFs, (TCHAR const*)SDPath, 0) != FR_OK)
+	{
+	  /* FatFs Initialization Error */
+	  Error_Handler();
+	}
+	else
+	{
+	  /*##-3- Create a FAT file system (format) on the logical drive #########*/
+	  /* WARNING: Formatting the uSD card will delete all content on the device */
+	  if(f_mkfs((TCHAR const*)SDPath, FM_FAT32, 0, workBuffer, sizeof(workBuffer)) != FR_OK)
+	  {
+		/* FatFs Format Error */
+		Error_Handler();
+	  }
+	  else
+	  {
+		/*##-4- Create and Open a new text file object with write access #####*/
+		if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+		{
+		  /* 'STM32.TXT' file Open for write Error */
+		  Error_Handler();
+		}
+		else
+		{
+		  /*##-5- Write data to the text file ################################*/
+		  res = f_write(&MyFile, wtext, sizeof(wtext), (void *)&byteswritten);
 
-          if((byteswritten == 0) || (res != FR_OK))
-          {
-            /* 'STM32.TXT' file Write or EOF Error */
-            Error_Handler();
-          }
-          else
-          {
-            /*##-6- Close the open text file #################################*/
-            f_close(&MyFile);
+		  if((byteswritten == 0) || (res != FR_OK))
+		  {
+			/* 'STM32.TXT' file Write or EOF Error */
+			Error_Handler();
+		  }
+		  else
+		  {
+			/*##-6- Close the open text file #################################*/
+			f_close(&MyFile);
 
-            /*##-7- Open the text file object with read access ###############*/
-            if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
-            {
-              /* 'STM32.TXT' file Open for read Error */
-              Error_Handler();
-            }
-            else
-            {
-              /*##-8- Read data from the text file ###########################*/
-              res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
+			/*##-7- Open the text file object with read access ###############*/
+			if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
+			{
+			  /* 'STM32.TXT' file Open for read Error */
+			  Error_Handler();
+			}
+			else
+			{
+			  /*##-8- Read data from the text file ###########################*/
+			  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
 
-              if((bytesread == 0) || (res != FR_OK))
-              {
-                /* 'STM32.TXT' file Read or EOF Error */
-                Error_Handler();
-              }
-              else
-              {
-                /*##-9- Close the open text file #############################*/
-                f_close(&MyFile);
+			  if((bytesread == 0) || (res != FR_OK))
+			  {
+				/* 'STM32.TXT' file Read or EOF Error */
+				Error_Handler();
+			  }
+			  else
+			  {
+				/*##-9- Close the open text file #############################*/
+				f_close(&MyFile);
 
-                /*##-10- Compare read data with the expected data ############*/
-                if ((bytesread != byteswritten))
-                {
-                  /* Read data is different from the expected data */
-                  Error_Handler();
-                }
-                else
-                {
-                  /* Success of the demo: no error occurrence */
-//                  BSP_LED_On(LED1);
-                	HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+				/*##-10- Compare read data with the expected data ############*/
+				if ((bytesread != byteswritten))
+				{
+				  /* Read data is different from the expected data */
+				  Error_Handler();
+				}
+				else
+				{
+				  /* Success of the demo: no error occurrence */
+	//                  BSP_LED_On(LED1);
+					HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+				}
+			  }
+			}
+		  }
+		}
+	  }
+	}
+//  }
 
   /*##-11- Unlink the micro SD disk I/O driver ###############################*/
-  FATFS_UnLinkDriver(SDPath);
+//  FATFS_UnLinkDriver(SDPath);
 
   /* Infinite loop */
   for(;;)
   {
+	  if(b1PushCounter > 0){
+		  if(--b1PushCounter == 0){
+			  b1LongPushCounter = 0;
+			  osSemaphoreRelease(sdReadBinarySemHandle);
+		  }
+	  }
     osDelay(1);
   }
   /* USER CODE END 5 */ 
+}
+
+/* USER CODE BEGIN Header_StartSdReadTask */
+/**
+* @brief Function implementing the sdReadTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSdReadTask */
+void StartSdReadTask(void const * argument)
+{
+  /* USER CODE BEGIN StartSdReadTask */
+  FRESULT res;       	/* FatFs function common result code */
+  uint32_t bytesread;	/* File write/read counts */
+  uint8_t rtext[100];	/* File read buffer */
+
+  osSemaphoreWait(sdReadBinarySemHandle, 0);
+
+  /* Infinite loop */
+  for(;;)
+  {
+	  osSemaphoreWait(sdReadBinarySemHandle, osWaitForever);
+
+	  /*##-7- Open the text file object with read access ###############*/
+	  if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
+	  {
+		  /* 'STM32.TXT' file Open for read Error */
+		  Error_Handler();
+	  }
+	  else
+	  {
+		  /*##-8- Read data from the text file ###########################*/
+		  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
+
+		  if((bytesread == 0) || (res != FR_OK))
+		  {
+			/* 'STM32.TXT' file Read or EOF Error */
+			Error_Handler();
+		  }
+		  else
+		  {
+			/*##-9- Close the open text file #############################*/
+			f_close(&MyFile);
+
+	//			/*##-10- Compare read data with the expected data ############*/
+	//			if ((bytesread != byteswritten))
+	//			{
+	//			  /* Read data is different from the expected data */
+	//			  Error_Handler();
+	//			}
+	//			else
+	//			{
+			  /* Success of the demo: no error occurrence */
+	//                  BSP_LED_On(LED1);
+			HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+	//			}
+		  }
+	  }
+	  osDelay(1);
+  }
+  /* USER CODE END StartSdReadTask */
 }
 
 /**

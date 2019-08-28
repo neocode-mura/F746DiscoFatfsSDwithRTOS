@@ -84,12 +84,16 @@ UART_HandleTypeDef huart6;
 SDRAM_HandleTypeDef hsdram1;
 
 osThreadId defaultTaskHandle;
+osThreadId sdReadTaskHandle;
+osSemaphoreId sdReadBinarySemHandle;
 /* USER CODE BEGIN PV */
 FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
 char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
 
+uint8_t b1PushCounter;
+uint16_t b1LongPushCounter;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -118,6 +122,7 @@ static void MX_TIM12_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 void StartDefaultTask(void const * argument);
+void StartSdReadTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -180,12 +185,18 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  b1PushCounter = 0;
+  b1LongPushCounter = 0;
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
+
+  /* Create the semaphores(s) */
+  /* definition and creation of sdReadBinarySem */
+  osSemaphoreDef(sdReadBinarySem);
+  sdReadBinarySemHandle = osSemaphoreCreate(osSemaphore(sdReadBinarySem), 1);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -203,6 +214,10 @@ int main(void)
   /* definition and creation of defaultTask */
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 4096);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* definition and creation of sdReadTask */
+  osThreadDef(sdReadTask, StartSdReadTask, osPriorityAboveNormal, 0, 1024);
+  sdReadTaskHandle = osThreadCreate(osThread(sdReadTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -798,7 +813,7 @@ static void MX_SAI2_Init(void)
   hsai_BlockB2.Init.MonoStereoMode = SAI_STEREOMODE;
   hsai_BlockB2.Init.CompandingMode = SAI_NOCOMPANDING;
   hsai_BlockB2.Init.TriState = SAI_OUTPUT_NOTRELEASED;
-  hsai_BlockB2.FrameInit.FrameLength = 8;
+  hsai_BlockB2.FrameInit.FrameLength = 24;
   hsai_BlockB2.FrameInit.ActiveFrameLength = 1;
   hsai_BlockB2.FrameInit.FSDefinition = SAI_FS_STARTFRAME;
   hsai_BlockB2.FrameInit.FSPolarity = SAI_FS_ACTIVE_LOW;
@@ -1485,6 +1500,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DCMI_PWR_EN_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : LCD_INT_Pin */
   GPIO_InitStruct.Pin = LCD_INT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
@@ -1552,9 +1573,33 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
+/**
+  * @brief  EXTI line detection callbacks.
+  * @param  GPIO_Pin Specifies the pins connected EXTI line
+  * @retval None
+  */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	/* Prevent unused argument(s) compilation warning */
+	UNUSED(GPIO_Pin);
+
+	/* NOTE: This function Should not be modified, when the callback is needed,
+		   the HAL_GPIO_EXTI_Callback could be implemented in the user file
+	*/
+
+	if(GPIO_Pin == GPIO_PIN_11){
+		b1PushCounter = 10;
+		b1LongPushCounter = 2000;
+		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
+	}
+}
 
 /* USER CODE END 4 */
 
@@ -1665,14 +1710,81 @@ void StartDefaultTask(void const * argument)
 //  }
 
   /*##-11- Unlink the micro SD disk I/O driver ###############################*/
-  FATFS_UnLinkDriver(SDPath);
+//  FATFS_UnLinkDriver(SDPath);
 
   /* Infinite loop */
   for(;;)
   {
+	  if(b1PushCounter > 0){
+		  if(--b1PushCounter == 0){
+			  b1LongPushCounter = 0;
+			  osSemaphoreRelease(sdReadBinarySemHandle);
+		  }
+	  }
     osDelay(1);
   }
   /* USER CODE END 5 */ 
+}
+
+/* USER CODE BEGIN Header_StartSdReadTask */
+/**
+* @brief Function implementing the sdReadTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSdReadTask */
+void StartSdReadTask(void const * argument)
+{
+  /* USER CODE BEGIN StartSdReadTask */
+  FRESULT res;       	/* FatFs function common result code */
+  uint32_t bytesread;	/* File write/read counts */
+  uint8_t rtext[100];	/* File read buffer */
+
+  osSemaphoreWait(sdReadBinarySemHandle, 0);
+
+  /* Infinite loop */
+  for(;;)
+  {
+	  osSemaphoreWait(sdReadBinarySemHandle, osWaitForever);
+
+	  /*##-7- Open the text file object with read access ###############*/
+	  if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
+	  {
+		  /* 'STM32.TXT' file Open for read Error */
+		  Error_Handler();
+	  }
+	  else
+	  {
+		  /*##-8- Read data from the text file ###########################*/
+		  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
+
+		  if((bytesread == 0) || (res != FR_OK))
+		  {
+			/* 'STM32.TXT' file Read or EOF Error */
+			Error_Handler();
+		  }
+		  else
+		  {
+			/*##-9- Close the open text file #############################*/
+			f_close(&MyFile);
+
+	//			/*##-10- Compare read data with the expected data ############*/
+	//			if ((bytesread != byteswritten))
+	//			{
+	//			  /* Read data is different from the expected data */
+	//			  Error_Handler();
+	//			}
+	//			else
+	//			{
+			  /* Success of the demo: no error occurrence */
+	//                  BSP_LED_On(LED1);
+			HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+	//			}
+		  }
+	  }
+	  osDelay(1);
+  }
+  /* USER CODE END StartSdReadTask */
 }
 
 /**
