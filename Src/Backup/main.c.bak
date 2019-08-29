@@ -85,7 +85,11 @@ SDRAM_HandleTypeDef hsdram1;
 
 osThreadId defaultTaskHandle;
 osThreadId sdReadTaskHandle;
+osThreadId sdWriteTaskHandle;
+osThreadId sdFormatTaskHandle;
 osSemaphoreId sdReadBinarySemHandle;
+osSemaphoreId sdWriteBinarySemHandle;
+osSemaphoreId sdFormatBinarySemHandle;
 /* USER CODE BEGIN PV */
 FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
@@ -123,6 +127,8 @@ static void MX_USART1_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 void StartDefaultTask(void const * argument);
 void StartSdReadTask(void const * argument);
+void StartSdWriteTask(void const * argument);
+void StartSdFormatTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -198,6 +204,14 @@ int main(void)
   osSemaphoreDef(sdReadBinarySem);
   sdReadBinarySemHandle = osSemaphoreCreate(osSemaphore(sdReadBinarySem), 1);
 
+  /* definition and creation of sdWriteBinarySem */
+  osSemaphoreDef(sdWriteBinarySem);
+  sdWriteBinarySemHandle = osSemaphoreCreate(osSemaphore(sdWriteBinarySem), 1);
+
+  /* definition and creation of sdFormatBinarySem */
+  osSemaphoreDef(sdFormatBinarySem);
+  sdFormatBinarySemHandle = osSemaphoreCreate(osSemaphore(sdFormatBinarySem), 1);
+
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
@@ -216,8 +230,16 @@ int main(void)
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of sdReadTask */
-  osThreadDef(sdReadTask, StartSdReadTask, osPriorityAboveNormal, 0, 1024);
+  osThreadDef(sdReadTask, StartSdReadTask, osPriorityNormal, 0, 1024);
   sdReadTaskHandle = osThreadCreate(osThread(sdReadTask), NULL);
+
+  /* definition and creation of sdWriteTask */
+  osThreadDef(sdWriteTask, StartSdWriteTask, osPriorityNormal, 0, 1024);
+  sdWriteTaskHandle = osThreadCreate(osThread(sdWriteTask), NULL);
+
+  /* definition and creation of sdFormatTask */
+  osThreadDef(sdFormatTask, StartSdFormatTask, osPriorityNormal, 0, 1024);
+  sdFormatTaskHandle = osThreadCreate(osThread(sdFormatTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -1596,7 +1618,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 	if(GPIO_Pin == GPIO_PIN_11){
 		b1PushCounter = 10;
-		b1LongPushCounter = 2000;
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
 	}
 }
@@ -1622,15 +1643,8 @@ void StartDefaultTask(void const * argument)
   MX_USB_HOST_Init();
 
   /* USER CODE BEGIN 5 */
-  FRESULT res;                                          /* FatFs function common result code */
-  uint32_t byteswritten, bytesread;                     /* File write/read counts */
-  uint8_t wtext[] = "This is STM32 working with FatFs"; /* File write buffer */
-  uint8_t rtext[100];                                   /* File read buffer */
 
-  /*##-1- Link the micro SD disk I/O driver ##################################*/
-//  if(FATFS_LinkDriver(&SD_Driver, SDPath) == 0)
-//  {
-	/*##-2- Register the file system object to the FatFs module ##############*/
+  /*## Register the file system object to the FatFs module ##############*/
 	if(f_mount(&SDFatFs, (TCHAR const*)SDPath, 0) != FR_OK)
 	{
 	  /* FatFs Initialization Error */
@@ -1638,103 +1652,37 @@ void StartDefaultTask(void const * argument)
 	}
 	else
 	{
-	  /*##-3- Create a FAT file system (format) on the logical drive #########*/
-	  /* WARNING: Formatting the uSD card will delete all content on the device */
-	  if(f_mkfs((TCHAR const*)SDPath, FM_FAT32, 0, workBuffer, sizeof(workBuffer)) != FR_OK)
-	  {
-		/* FatFs Format Error */
-		Error_Handler();
-	  }
-	  else
-	  {
-		/*##-4- Create and Open a new text file object with write access #####*/
-		if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
-		{
-		  /* 'STM32.TXT' file Open for write Error */
-		  Error_Handler();
-		}
-		else
-		{
-		  /*##-5- Write data to the text file ################################*/
-		  res = f_write(&MyFile, wtext, sizeof(wtext), (void *)&byteswritten);
-
-		  if((byteswritten == 0) || (res != FR_OK))
-		  {
-			/* 'STM32.TXT' file Write or EOF Error */
-			Error_Handler();
-		  }
-		  else
-		  {
-			/*##-6- Close the open text file #################################*/
-			f_close(&MyFile);
-
-			/*##-7- Open the text file object with read access ###############*/
-			if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
-			{
-			  /* 'STM32.TXT' file Open for read Error */
-			  Error_Handler();
-			}
-			else
-			{
-			  /*##-8- Read data from the text file ###########################*/
-			  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
-
-			  if((bytesread == 0) || (res != FR_OK))
-			  {
-				/* 'STM32.TXT' file Read or EOF Error */
-				Error_Handler();
-			  }
-			  else
-			  {
-				/*##-9- Close the open text file #############################*/
-				f_close(&MyFile);
-
-				/*##-10- Compare read data with the expected data ############*/
-				if ((bytesread != byteswritten))
-				{
-				  /* Read data is different from the expected data */
-				  Error_Handler();
-				}
-				else
-				{
-				  /* Success of the demo: no error occurrence */
-	//                  BSP_LED_On(LED1);
-					HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-				}
-			  }
-			}
-		  }
-		}
-	  }
+		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
 	}
-//  }
-
-  /*##-11- Unlink the micro SD disk I/O driver ###############################*/
-//  FATFS_UnLinkDriver(SDPath);
 
   /* Infinite loop */
   for(;;)
   {
 	  if(b1PushCounter > 0){
 		  if(--b1PushCounter == 0){
-			  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET)
+			  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) != GPIO_PIN_RESET)
 			  {
-				  b1LongPushCounter = 0;
-				  osSemaphoreRelease(sdReadBinarySemHandle);
+				  b1LongPushCounter = 3000;
 			  }
 			  else{
-				  b1PushCounter = 1;
+				  HAL_GPIO_WritePin(B1_GPIO_Port, B1_Pin, GPIO_PIN_SET);
 			  }
 		  }
 	  }
 	  if(b1LongPushCounter > 0){
-		  if(--b1LongPushCounter == 0){
-			  b1PushCounter = 0;
-			  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET){
-
+		  b1LongPushCounter--;
+		  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET){
+			  if(b1LongPushCounter < 2000){
+				  osSemaphoreRelease(sdWriteBinarySemHandle);
 			  }
 			  else{
-				  b1LongPushCounter = 1;
+				  osSemaphoreRelease(sdReadBinarySemHandle);
+			  }
+			  b1LongPushCounter = 0;
+		  }
+		  else{
+			  if(b1LongPushCounter == 0){
+				  osSemaphoreRelease(sdFormatBinarySemHandle);
 			  }
 		  }
 	  }
@@ -1764,7 +1712,7 @@ void StartSdReadTask(void const * argument)
   {
 	  osSemaphoreWait(sdReadBinarySemHandle, osWaitForever);
 
-	  /*##-7- Open the text file object with read access ###############*/
+	  /*## Open the text file object with read access ###############*/
 	  if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
 	  {
 		  /* 'STM32.TXT' file Open for read Error */
@@ -1772,7 +1720,7 @@ void StartSdReadTask(void const * argument)
 	  }
 	  else
 	  {
-		  /*##-8- Read data from the text file ###########################*/
+		  /*## Read data from the text file ###########################*/
 		  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
 
 		  if((bytesread == 0) || (res != FR_OK))
@@ -1782,26 +1730,97 @@ void StartSdReadTask(void const * argument)
 		  }
 		  else
 		  {
-			/*##-9- Close the open text file #############################*/
+			/*## Close the open text file #############################*/
 			f_close(&MyFile);
 
-	//			/*##-10- Compare read data with the expected data ############*/
-	//			if ((bytesread != byteswritten))
-	//			{
-	//			  /* Read data is different from the expected data */
-	//			  Error_Handler();
-	//			}
-	//			else
-	//			{
-			  /* Success of the demo: no error occurrence */
-	//                  BSP_LED_On(LED1);
 			HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-	//			}
 		  }
 	  }
 	  osDelay(1);
   }
   /* USER CODE END StartSdReadTask */
+}
+
+/* USER CODE BEGIN Header_StartSdWriteTask */
+/**
+* @brief Function implementing the sdWriteTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSdWriteTask */
+void StartSdWriteTask(void const * argument)
+{
+  /* USER CODE BEGIN StartSdWriteTask */
+  FRESULT res;                                          /* FatFs function common result code */
+  uint32_t byteswritten;                     			/* File write/read counts */
+  uint8_t wtext[] = "This is STM32 working with FatFs by push switch"; /* File write buffer */
+
+  osSemaphoreWait(sdWriteBinarySemHandle, 0);
+
+  /* Infinite loop */
+  for(;;)
+  {
+	osSemaphoreWait(sdWriteBinarySemHandle, osWaitForever);
+
+	/*## Create and Open a new text file object with write access #####*/
+	if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+	{
+	  /* 'STM32.TXT' file Open for write Error */
+	  Error_Handler();
+	}
+	else
+	{
+	  /*## Write data to the text file ################################*/
+	  res = f_write(&MyFile, wtext, sizeof(wtext), (void *)&byteswritten);
+
+	  if((byteswritten == 0) || (res != FR_OK))
+	  {
+		/* 'STM32.TXT' file Write or EOF Error */
+		Error_Handler();
+	  }
+	  else
+	  {
+		/*## Close the open text file #################################*/
+		f_close(&MyFile);
+		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+	  }
+	}
+    osDelay(1);
+  }
+  /* USER CODE END StartSdWriteTask */
+}
+
+/* USER CODE BEGIN Header_StartSdFormatTask */
+/**
+* @brief Function implementing the sdFormatTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSdFormatTask */
+void StartSdFormatTask(void const * argument)
+{
+  /* USER CODE BEGIN StartSdFormatTask */
+  osSemaphoreWait(sdFormatBinarySemHandle, 0);
+
+  /* Infinite loop */
+  for(;;)
+  {
+	osSemaphoreWait(sdFormatBinarySemHandle, osWaitForever);
+
+	/*## Create a FAT file system (format) on the logical drive #########*/
+	/* WARNING: Formatting the uSD card will delete all content on the device */
+	if(f_mkfs((TCHAR const*)SDPath, FM_FAT32, 0, workBuffer, sizeof(workBuffer)) != FR_OK)
+	{
+		/* FatFs Format Error */
+		Error_Handler();
+	}
+	else{
+		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+	}
+
+    osDelay(1);
+  }
+  /* USER CODE END StartSdFormatTask */
 }
 
 /**
