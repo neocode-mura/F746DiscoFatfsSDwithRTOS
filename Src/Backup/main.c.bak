@@ -102,6 +102,8 @@ uint8_t workBuffer[2*_MAX_SS];
 uint8_t recvBuff[2][_MAX_SS];
 uint8_t buffSel;
 uint8_t dataIdx;
+uint8_t writeBuffSel;
+uint16_t writeSize;
 uint8_t recvData;
 uint16_t b1PushCounter;
 /* USER CODE END PV */
@@ -235,7 +237,7 @@ int main(void)
   usart6TxQueueHandle = osMessageCreate(osMessageQ(usart6TxQueue), NULL);
 
   /* definition and creation of usart6RxQueue */
-  osMessageQDef(usart6RxQueue, 50, uint8_t);
+  osMessageQDef(usart6RxQueue, 100, uint8_t);
   usart6RxQueueHandle = osMessageCreate(osMessageQ(usart6RxQueue), NULL);
 
   /* USER CODE BEGIN RTOS_QUEUES */
@@ -1341,7 +1343,7 @@ static void MX_USART6_UART_Init(void)
 
   /* USER CODE END USART6_Init 1 */
   huart6.Instance = USART6;
-  huart6.Init.BaudRate = 115200;
+  huart6.Init.BaudRate = 19200;
   huart6.Init.WordLength = UART_WORDLENGTH_8B;
   huart6.Init.StopBits = UART_STOPBITS_1;
   huart6.Init.Parity = UART_PARITY_NONE;
@@ -1648,11 +1650,63 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 	HAL_StatusTypeDef retStatus;
+	uint8_t buffSelChange;
+//	FRESULT res;                                          /* FatFs function common result code */
+//	uint32_t byteswritten;                     			/* File write/read counts */
 
 	if(huart == &huart6)
 	{
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
-		osMessagePut(usart6RxQueueHandle, (uint32_t)*(huart6.pRxBuffPtr - 1), 1);
+//		osMessagePut(usart6RxQueueHandle, (uint32_t)*(huart6.pRxBuffPtr - 1), 1);
+
+
+		buffSelChange = 0;
+		recvBuff[buffSel][dataIdx] = *(huart6.pRxBuffPtr - 1);
+		if(recvBuff[buffSel][dataIdx++] != ';')
+		{
+			if(dataIdx == _MAX_SS - 1)
+			{
+				buffSelChange = 1;
+			}
+		}
+		else
+		{
+			buffSelChange = 1;
+		}
+		if(buffSelChange)
+		{
+			writeBuffSel = buffSel;
+			writeSize = dataIdx;
+			buffSel = (buffSel == 0)? 1: 0;
+			dataIdx = 0;
+
+			osSemaphoreRelease(sdWriteBinarySemHandle);
+//			/*## Create and Open a new text file object with write access #####*/
+//			if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+//			{
+//			  /* 'STM32.TXT' file Open for write Error */
+//			  Error_Handler();
+//			}
+//			else
+//			{
+//			  /*## Write data to the text file ################################*/
+//			  res = f_write(&MyFile, &recvBuff[writeBuffSel][0], writeSize, (void *)&byteswritten);
+//
+//			  if((byteswritten == 0) || (res != FR_OK))
+//			  {
+//				/* 'STM32.TXT' file Write or EOF Error */
+//				Error_Handler();
+//			  }
+//			  else
+//			  {
+//				/*## Close the open text file #################################*/
+//				f_close(&MyFile);
+//				HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+//			  }
+//			}
+		}
+
+
 		do
 		{
 			retStatus = HAL_UART_Receive_IT(&huart6, &recvData, 1);
@@ -1784,7 +1838,7 @@ void StartSdWriteTask(void const * argument)
   /* USER CODE BEGIN StartSdWriteTask */
   FRESULT res;                                          /* FatFs function common result code */
   uint32_t byteswritten;                     			/* File write/read counts */
-  uint8_t wtext[] = "This is STM32 working with FatFs by push switch"; /* File write buffer */
+//  uint8_t wtext[] = "This is STM32 working with FatFs by push switch"; /* File write buffer */
 
   osSemaphoreWait(sdWriteBinarySemHandle, 0);
 
@@ -1802,7 +1856,7 @@ void StartSdWriteTask(void const * argument)
 	else
 	{
 	  /*## Write data to the text file ################################*/
-	  res = f_write(&MyFile, wtext, sizeof(wtext), (void *)&byteswritten);
+	  res = f_write(&MyFile, &recvBuff[writeBuffSel][0], writeSize, (void *)&byteswritten);
 
 	  if((byteswritten == 0) || (res != FR_OK))
 	  {
@@ -1866,15 +1920,15 @@ void StartUsart6RxTask(void const * argument)
   /* USER CODE BEGIN StartUsart6RxTask */
   osEvent osevent;
   uint8_t buffSelChange;
-  uint16_t writeSize;
-  uint8_t writeBuffSel;
+//  uint16_t writeSize;
+//  uint8_t writeBuffSel;
   FRESULT res;                                          /* FatFs function common result code */
   uint32_t byteswritten;                     			/* File write/read counts */
 
   /* Infinite loop */
   for(;;)
   {
-	osevent = osMessageGet(usart6RxQueueHandle, osWaitForever);
+	osevent = osMessageGet(usart6RxQueueHandle, 0);
 	if(osevent.status == osEventMessage)
 	{
 		buffSelChange = 0;
@@ -1921,7 +1975,7 @@ void StartUsart6RxTask(void const * argument)
 			}
 		}
 	}
-    osDelay(1);
+//    osDelay(1);
   }
   /* USER CODE END StartUsart6RxTask */
 }

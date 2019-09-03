@@ -26,7 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -101,9 +101,13 @@ char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
 uint8_t recvBuff[2][_MAX_SS];
 uint8_t buffSel;
-uint8_t dataIdx;
+uint16_t dataIdx;
+uint8_t writeBuffSel;
+uint16_t writeSize;
 uint8_t recvData;
 uint16_t b1PushCounter;
+
+uint32_t tickRec[10];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -1648,11 +1652,38 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 	HAL_StatusTypeDef retStatus;
+	uint8_t buffSelChange;
+//	FRESULT res;                                          /* FatFs function common result code */
+//	uint32_t byteswritten;                     			/* File write/read counts */
 
 	if(huart == &huart6)
 	{
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
-		osMessagePut(usart6RxQueueHandle, (uint32_t)*(huart6.pRxBuffPtr - 1), 1);
+
+		buffSelChange = 0;
+		recvBuff[buffSel][dataIdx] = *(huart6.pRxBuffPtr - 1);
+		if(recvBuff[buffSel][dataIdx++] != ';')
+		{
+			if(dataIdx == _MAX_SS)
+			{
+				buffSelChange = 1;
+			}
+		}
+		else
+		{
+			buffSelChange = 1;
+		}
+		if(buffSelChange)
+		{
+			writeBuffSel = buffSel;
+			writeSize = dataIdx;
+			buffSel = (buffSel == 0)? 1: 0;
+			dataIdx = 0;
+
+			osSemaphoreRelease(sdWriteBinarySemHandle);
+		}
+
+
 		do
 		{
 			retStatus = HAL_UART_Receive_IT(&huart6, &recvData, 1);
@@ -1784,7 +1815,7 @@ void StartSdWriteTask(void const * argument)
   /* USER CODE BEGIN StartSdWriteTask */
   FRESULT res;                                          /* FatFs function common result code */
   uint32_t byteswritten;                     			/* File write/read counts */
-  uint8_t wtext[] = "This is STM32 working with FatFs by push switch"; /* File write buffer */
+  char fileName[11] = "1234567890\0";
 
   osSemaphoreWait(sdWriteBinarySemHandle, 0);
 
@@ -1793,8 +1824,11 @@ void StartSdWriteTask(void const * argument)
   {
 	osSemaphoreWait(sdWriteBinarySemHandle, osWaitForever);
 
+	strncpy(fileName, (char*)recvBuff[writeBuffSel], 10);
+
+	tickRec[0] = HAL_GetTick();
 	/*## Create and Open a new text file object with write access #####*/
-	if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+	if(f_open(&MyFile, fileName, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
 	{
 	  /* 'STM32.TXT' file Open for write Error */
 	  Error_Handler();
@@ -1802,7 +1836,9 @@ void StartSdWriteTask(void const * argument)
 	else
 	{
 	  /*## Write data to the text file ################################*/
-	  res = f_write(&MyFile, wtext, sizeof(wtext), (void *)&byteswritten);
+	  tickRec[1] = HAL_GetTick();
+	  res = f_write(&MyFile, recvBuff[writeBuffSel], writeSize, (void *)&byteswritten);
+	  tickRec[2] = HAL_GetTick();
 
 	  if((byteswritten == 0) || (res != FR_OK))
 	  {
@@ -1866,8 +1902,8 @@ void StartUsart6RxTask(void const * argument)
   /* USER CODE BEGIN StartUsart6RxTask */
   osEvent osevent;
   uint8_t buffSelChange;
-  uint16_t writeSize;
-  uint8_t writeBuffSel;
+//  uint16_t writeSize;
+//  uint8_t writeBuffSel;
   FRESULT res;                                          /* FatFs function common result code */
   uint32_t byteswritten;                     			/* File write/read counts */
 
