@@ -87,6 +87,10 @@ osThreadId defaultTaskHandle;
 osThreadId sdReadTaskHandle;
 osThreadId sdWriteTaskHandle;
 osThreadId sdFormatTaskHandle;
+osThreadId usart6RxTaskHandle;
+osThreadId usart6TxTaskHandle;
+osMessageQId usart6TxQueueHandle;
+osMessageQId usart6RxQueueHandle;
 osSemaphoreId sdReadBinarySemHandle;
 osSemaphoreId sdWriteBinarySemHandle;
 osSemaphoreId sdFormatBinarySemHandle;
@@ -95,7 +99,10 @@ FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
 char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
-
+uint8_t recvBuff[2][_MAX_SS];
+uint8_t buffSel;
+uint8_t dataIdx;
+uint8_t recvData;
 uint16_t b1PushCounter;
 /* USER CODE END PV */
 
@@ -128,6 +135,8 @@ void StartDefaultTask(void const * argument);
 void StartSdReadTask(void const * argument);
 void StartSdWriteTask(void const * argument);
 void StartSdFormatTask(void const * argument);
+void StartUsart6RxTask(void const * argument);
+void StartUsart6TxTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -191,6 +200,8 @@ int main(void)
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
   b1PushCounter = 0;
+  buffSel = 0;
+  dataIdx = 0;
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -218,6 +229,15 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* definition and creation of usart6TxQueue */
+  osMessageQDef(usart6TxQueue, 100, uint8_t);
+  usart6TxQueueHandle = osMessageCreate(osMessageQ(usart6TxQueue), NULL);
+
+  /* definition and creation of usart6RxQueue */
+  osMessageQDef(usart6RxQueue, 100, uint8_t);
+  usart6RxQueueHandle = osMessageCreate(osMessageQ(usart6RxQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -238,6 +258,14 @@ int main(void)
   /* definition and creation of sdFormatTask */
   osThreadDef(sdFormatTask, StartSdFormatTask, osPriorityNormal, 0, 1024);
   sdFormatTaskHandle = osThreadCreate(osThread(sdFormatTask), NULL);
+
+  /* definition and creation of usart6RxTask */
+  osThreadDef(usart6RxTask, StartUsart6RxTask, osPriorityNormal, 0, 1024);
+  usart6RxTaskHandle = osThreadCreate(osThread(usart6RxTask), NULL);
+
+  /* definition and creation of usart6TxTask */
+  osThreadDef(usart6TxTask, StartUsart6TxTask, osPriorityNormal, 0, 1024);
+  usart6TxTaskHandle = osThreadCreate(osThread(usart6TxTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -1607,17 +1635,29 @@ static void MX_GPIO_Init(void)
   */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	/* Prevent unused argument(s) compilation warning */
-	UNUSED(GPIO_Pin);
-
-	/* NOTE: This function Should not be modified, when the callback is needed,
-		   the HAL_GPIO_EXTI_Callback could be implemented in the user file
-	*/
-
-//	if(GPIO_Pin == GPIO_PIN_11){
+	if(GPIO_Pin == GPIO_PIN_11){
 		b1PushCounter = 3000;
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
-//	}
+	}
+}
+/**
+  * @brief  Rx Transfer completed callback.
+  * @param  huart UART handle.
+  * @retval None
+  */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	HAL_StatusTypeDef retStatus;
+
+	if(huart == &huart6)
+	{
+		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
+		osMessagePut(usart6RxQueueHandle, (uint32_t)*(huart6.pRxBuffPtr - 1), 1);
+		do
+		{
+			retStatus = HAL_UART_Receive_IT(&huart6, &recvData, 1);
+		} while(retStatus == HAL_BUSY);
+	}
 }
 
 /* USER CODE END 4 */
@@ -1652,6 +1692,8 @@ void StartDefaultTask(void const * argument)
 	{
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
 	}
+
+	HAL_UART_Receive_IT(&huart6, &recvData, 1);
 
   /* Infinite loop */
   for(;;)
@@ -1810,6 +1852,96 @@ void StartSdFormatTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END StartSdFormatTask */
+}
+
+/* USER CODE BEGIN Header_StartUsart6RxTask */
+/**
+* @brief Function implementing the usart6RxTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUsart6RxTask */
+void StartUsart6RxTask(void const * argument)
+{
+  /* USER CODE BEGIN StartUsart6RxTask */
+  osEvent osevent;
+  uint8_t buffSelChange;
+  uint16_t writeSize;
+  uint8_t writeBuffSel;
+  FRESULT res;                                          /* FatFs function common result code */
+  uint32_t byteswritten;                     			/* File write/read counts */
+
+  /* Infinite loop */
+  for(;;)
+  {
+	osevent = osMessageGet(usart6RxQueueHandle, 0);
+	if(osevent.status == osEventMessage)
+	{
+		buffSelChange = 0;
+		recvBuff[buffSel][dataIdx] = osevent.value.v;
+		if(recvBuff[buffSel][dataIdx++] != ';')
+		{
+			if(dataIdx == _MAX_SS - 1)
+			{
+				buffSelChange = 1;
+			}
+		}
+		else
+		{
+			buffSelChange = 1;
+		}
+		if(buffSelChange)
+		{
+			writeBuffSel = buffSel;
+			writeSize = dataIdx;
+			buffSel = (buffSel == 0)? 1: 0;
+			dataIdx = 0;
+			/*## Create and Open a new text file object with write access #####*/
+			if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+			{
+			  /* 'STM32.TXT' file Open for write Error */
+			  Error_Handler();
+			}
+			else
+			{
+			  /*## Write data to the text file ################################*/
+			  res = f_write(&MyFile, &recvBuff[writeBuffSel][0], writeSize, (void *)&byteswritten);
+
+			  if((byteswritten == 0) || (res != FR_OK))
+			  {
+				/* 'STM32.TXT' file Write or EOF Error */
+				Error_Handler();
+			  }
+			  else
+			  {
+				/*## Close the open text file #################################*/
+				f_close(&MyFile);
+				HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+			  }
+			}
+		}
+	}
+//    osDelay(1);
+  }
+  /* USER CODE END StartUsart6RxTask */
+}
+
+/* USER CODE BEGIN Header_StartUsart6TxTask */
+/**
+* @brief Function implementing the usart6TxTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUsart6TxTask */
+void StartUsart6TxTask(void const * argument)
+{
+  /* USER CODE BEGIN StartUsart6TxTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartUsart6TxTask */
 }
 
 /**
