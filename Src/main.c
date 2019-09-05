@@ -87,10 +87,6 @@ osThreadId defaultTaskHandle;
 osThreadId sdReadTaskHandle;
 osThreadId sdWriteTaskHandle;
 osThreadId sdFormatTaskHandle;
-osThreadId usart6RxTaskHandle;
-osThreadId usart6TxTaskHandle;
-osMessageQId usart6TxQueueHandle;
-osMessageQId usart6RxQueueHandle;
 osSemaphoreId sdReadBinarySemHandle;
 osSemaphoreId sdWriteBinarySemHandle;
 osSemaphoreId sdFormatBinarySemHandle;
@@ -99,13 +95,15 @@ FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
 char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
-uint8_t recvBuff[2][_MAX_SS];
+//uint8_t recvBuff[2][_MAX_SS];
 uint8_t buffSel;
 uint16_t dataIdx;
-uint8_t writeBuffSel;
+//uint8_t writeBuffSel;
 uint16_t writeSize;
+uint16_t writedataIdx;
 uint8_t recvData;
 uint16_t b1PushCounter;
+char fileName[11];
 
 uint32_t tickRec[10];
 /* USER CODE END PV */
@@ -139,8 +137,6 @@ void StartDefaultTask(void const * argument);
 void StartSdReadTask(void const * argument);
 void StartSdWriteTask(void const * argument);
 void StartSdFormatTask(void const * argument);
-void StartUsart6RxTask(void const * argument);
-void StartUsart6TxTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -233,15 +229,6 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* definition and creation of usart6TxQueue */
-  osMessageQDef(usart6TxQueue, 100, uint8_t);
-  usart6TxQueueHandle = osMessageCreate(osMessageQ(usart6TxQueue), NULL);
-
-  /* definition and creation of usart6RxQueue */
-  osMessageQDef(usart6RxQueue, 100, uint8_t);
-  usart6RxQueueHandle = osMessageCreate(osMessageQ(usart6RxQueue), NULL);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -262,14 +249,6 @@ int main(void)
   /* definition and creation of sdFormatTask */
   osThreadDef(sdFormatTask, StartSdFormatTask, osPriorityNormal, 0, 1024);
   sdFormatTaskHandle = osThreadCreate(osThread(sdFormatTask), NULL);
-
-  /* definition and creation of usart6RxTask */
-  osThreadDef(usart6RxTask, StartUsart6RxTask, osPriorityNormal, 0, 1024);
-  usart6RxTaskHandle = osThreadCreate(osThread(usart6RxTask), NULL);
-
-  /* definition and creation of usart6TxTask */
-  osThreadDef(usart6TxTask, StartUsart6TxTask, osPriorityNormal, 0, 1024);
-  usart6TxTaskHandle = osThreadCreate(osThread(usart6TxTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -1640,7 +1619,7 @@ static void MX_GPIO_Init(void)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	if(GPIO_Pin == GPIO_PIN_11){
-		b1PushCounter = 3000;
+		b1PushCounter = B1SWITCH_SLICE_PUSH_TIME;
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
 	}
 }
@@ -1653,18 +1632,18 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 	HAL_StatusTypeDef retStatus;
 	uint8_t buffSelChange;
-//	FRESULT res;                                          /* FatFs function common result code */
-//	uint32_t byteswritten;                     			/* File write/read counts */
 
 	if(huart == &huart6)
 	{
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
 
 		buffSelChange = 0;
-		recvBuff[buffSel][dataIdx] = *(huart6.pRxBuffPtr - 1);
-		if(recvBuff[buffSel][dataIdx++] != ';')
+//		recvBuff[buffSel][dataIdx] = *(huart6.pRxBuffPtr - 1);
+		workBuffer[dataIdx] = *(huart6.pRxBuffPtr - 1);
+//		if(recvBuff[buffSel][dataIdx++] != ';')
+		if(workBuffer[dataIdx++] != ';')
 		{
-			if(dataIdx == _MAX_SS)
+			if((dataIdx % _MAX_SS) == 0)
 			{
 				buffSelChange = 1;
 			}
@@ -1675,11 +1654,20 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		}
 		if(buffSelChange)
 		{
-			writeBuffSel = buffSel;
-			writeSize = dataIdx;
-			buffSel = (buffSel == 0)? 1: 0;
-			dataIdx = 0;
-
+//			writeBuffSel = buffSel;
+//			buffSel = (buffSel == 0)? 1: 0;
+			if(dataIdx > _MAX_SS)
+			{
+				writeSize = dataIdx - _MAX_SS;
+				writedataIdx = _MAX_SS;
+				dataIdx = 0;
+			}
+			else
+			{
+				writeSize = dataIdx;
+				writedataIdx = 0;
+				dataIdx = _MAX_SS;
+			}
 			osSemaphoreRelease(sdWriteBinarySemHandle);
 		}
 
@@ -1731,15 +1719,15 @@ void StartDefaultTask(void const * argument)
   {
 	  osDelay(1);
 	  if(b1PushCounter > 0){
-		  if(--b1PushCounter < (3000 - 10))
+		  if(--b1PushCounter < (B1SWITCH_SLICE_PUSH_TIME - CHATTERING_REMOVE_TIME))
 		  {
 			  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET){
-				  if(b1PushCounter < 2000){
-					  osSemaphoreRelease(sdWriteBinarySemHandle);
-				  }
-				  else{
-					  osSemaphoreRelease(sdReadBinarySemHandle);
-				  }
+//				  if(b1PushCounter < 2000){
+//					  osSemaphoreRelease(sdWriteBinarySemHandle);
+//				  }
+//				  else{
+				  osSemaphoreRelease(sdReadBinarySemHandle);
+//				  }
 				  b1PushCounter = 0;
 			  }
 			  else{
@@ -1767,6 +1755,9 @@ void StartSdReadTask(void const * argument)
   uint32_t bytesread;	/* File write/read counts */
   uint8_t rtext[100];	/* File read buffer */
 
+//	  	DIR* dp;			/* Pointer to the open directory object */
+//	  	FILINFO* fno;		/* Pointer to file information to return */
+
   osSemaphoreWait(sdReadBinarySemHandle, 0);
 
   /* Infinite loop */
@@ -1774,6 +1765,10 @@ void StartSdReadTask(void const * argument)
   {
 	  osSemaphoreWait(sdReadBinarySemHandle, osWaitForever);
 
+//	  res = dir_find (	/* FR_OK(0):succeeded, !=0:error */
+//	  	 dp			/* Pointer to the directory object with the file name */
+//
+//	  );
 	  /*## Open the text file object with read access ###############*/
 	  if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
 	  {
@@ -1815,7 +1810,12 @@ void StartSdWriteTask(void const * argument)
   /* USER CODE BEGIN StartSdWriteTask */
   FRESULT res;                                          /* FatFs function common result code */
   uint32_t byteswritten;                     			/* File write/read counts */
-  char fileName[11] = "1234567890\0";
+//  char txtChar[] = ".txt";
+//  uint8_t test;
+  char tmpFileName[]  = "1234567890\0";
+//  char tmpFileName2[] = "Stm_05.txt\0";
+//  uint8_t tmpWriteBuffSel;
+//  uint16_t tmpwriteSize;
 
   osSemaphoreWait(sdWriteBinarySemHandle, 0);
 
@@ -1824,11 +1824,24 @@ void StartSdWriteTask(void const * argument)
   {
 	osSemaphoreWait(sdWriteBinarySemHandle, osWaitForever);
 
-	strncpy(fileName, (char*)recvBuff[writeBuffSel], 10);
-
 	tickRec[0] = HAL_GetTick();
-	/*## Create and Open a new text file object with write access #####*/
-	if(f_open(&MyFile, fileName, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+
+//	tmpWriteBuffSel = writeBuffSel;
+//	tmpwriteSize = writeSize;
+//	strncpy(tmpFileName, (char*)recvBuff[tmpWriteBuffSel], 10);
+	strncpy(tmpFileName, (char*)&workBuffer[writedataIdx], 10);
+	if(strstr(tmpFileName, ".txt") != NULL)
+	{
+		/*## Create and Open a new text file object with write access #####*/
+		strcpy(fileName, tmpFileName);
+		res = f_open(&MyFile, fileName, FA_CREATE_ALWAYS | FA_WRITE);
+	}
+	else
+	{
+//		strcpy(fileName, tmpFileName2);
+		res = f_open(&MyFile, fileName, FA_OPEN_APPEND | FA_WRITE);
+	}
+	if(res != FR_OK)
 	{
 	  /* 'STM32.TXT' file Open for write Error */
 	  Error_Handler();
@@ -1837,9 +1850,13 @@ void StartSdWriteTask(void const * argument)
 	{
 	  /*## Write data to the text file ################################*/
 	  tickRec[1] = HAL_GetTick();
-	  res = f_write(&MyFile, recvBuff[writeBuffSel], writeSize, (void *)&byteswritten);
+//	  res = f_write(&MyFile, recvBuff[tmpWriteBuffSel], tmpwriteSize, (void *)&byteswritten);
+	  res = f_write(&MyFile, &workBuffer[writedataIdx], writeSize, (void*)&byteswritten);
 	  tickRec[2] = HAL_GetTick();
-
+//	  if(writeBuffSel == 1)
+//	  {
+//		  test = 1;
+//	  }
 	  if((byteswritten == 0) || (res != FR_OK))
 	  {
 		/* 'STM32.TXT' file Write or EOF Error */
@@ -1888,96 +1905,6 @@ void StartSdFormatTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END StartSdFormatTask */
-}
-
-/* USER CODE BEGIN Header_StartUsart6RxTask */
-/**
-* @brief Function implementing the usart6RxTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartUsart6RxTask */
-void StartUsart6RxTask(void const * argument)
-{
-  /* USER CODE BEGIN StartUsart6RxTask */
-  osEvent osevent;
-  uint8_t buffSelChange;
-//  uint16_t writeSize;
-//  uint8_t writeBuffSel;
-  FRESULT res;                                          /* FatFs function common result code */
-  uint32_t byteswritten;                     			/* File write/read counts */
-
-  /* Infinite loop */
-  for(;;)
-  {
-	osevent = osMessageGet(usart6RxQueueHandle, 0);
-	if(osevent.status == osEventMessage)
-	{
-		buffSelChange = 0;
-		recvBuff[buffSel][dataIdx] = osevent.value.v;
-		if(recvBuff[buffSel][dataIdx++] != ';')
-		{
-			if(dataIdx == _MAX_SS - 1)
-			{
-				buffSelChange = 1;
-			}
-		}
-		else
-		{
-			buffSelChange = 1;
-		}
-		if(buffSelChange)
-		{
-			writeBuffSel = buffSel;
-			writeSize = dataIdx;
-			buffSel = (buffSel == 0)? 1: 0;
-			dataIdx = 0;
-			/*## Create and Open a new text file object with write access #####*/
-			if(f_open(&MyFile, "STM32.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
-			{
-			  /* 'STM32.TXT' file Open for write Error */
-			  Error_Handler();
-			}
-			else
-			{
-			  /*## Write data to the text file ################################*/
-			  res = f_write(&MyFile, &recvBuff[writeBuffSel][0], writeSize, (void *)&byteswritten);
-
-			  if((byteswritten == 0) || (res != FR_OK))
-			  {
-				/* 'STM32.TXT' file Write or EOF Error */
-				Error_Handler();
-			  }
-			  else
-			  {
-				/*## Close the open text file #################################*/
-				f_close(&MyFile);
-				HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-			  }
-			}
-		}
-	}
-//    osDelay(1);
-  }
-  /* USER CODE END StartUsart6RxTask */
-}
-
-/* USER CODE BEGIN Header_StartUsart6TxTask */
-/**
-* @brief Function implementing the usart6TxTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartUsart6TxTask */
-void StartUsart6TxTask(void const * argument)
-{
-  /* USER CODE BEGIN StartUsart6TxTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartUsart6TxTask */
 }
 
 /**

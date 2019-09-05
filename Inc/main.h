@@ -387,7 +387,8 @@ void Error_Handler(void);
 #define ARDUINO_MOSI_PWM_D11_Pin GPIO_PIN_15
 #define ARDUINO_MOSI_PWM_D11_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
-
+#define B1SWITCH_SLICE_PUSH_TIME	2000	// Switchプッシュ時間2000ms以上:Format、2000ms未満リード。
+#define CHATTERING_REMOVE_TIME	10
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
