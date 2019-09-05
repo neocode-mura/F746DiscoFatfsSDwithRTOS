@@ -95,10 +95,8 @@ FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
 char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
-//uint8_t recvBuff[2][_MAX_SS];
 uint8_t buffSel;
 uint16_t dataIdx;
-//uint8_t writeBuffSel;
 uint16_t writeSize;
 uint16_t writedataIdx;
 uint8_t recvData;
@@ -1638,9 +1636,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
 
 		buffSelChange = 0;
-//		recvBuff[buffSel][dataIdx] = *(huart6.pRxBuffPtr - 1);
 		workBuffer[dataIdx] = *(huart6.pRxBuffPtr - 1);
-//		if(recvBuff[buffSel][dataIdx++] != ';')
 		if(workBuffer[dataIdx++] != ';')
 		{
 			if((dataIdx % _MAX_SS) == 0)
@@ -1654,8 +1650,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		}
 		if(buffSelChange)
 		{
-//			writeBuffSel = buffSel;
-//			buffSel = (buffSel == 0)? 1: 0;
 			if(dataIdx > _MAX_SS)
 			{
 				writeSize = dataIdx - _MAX_SS;
@@ -1753,8 +1747,13 @@ void StartSdReadTask(void const * argument)
   /* USER CODE BEGIN StartSdReadTask */
   FRESULT res;       	/* FatFs function common result code */
   uint32_t bytesread;	/* File write/read counts */
-  uint8_t rtext[100];	/* File read buffer */
-
+//  uint8_t rtext[100];	/* File read buffer */
+  uint16_t fileSize;
+  uint16_t readSize;
+  uint16_t readDataIdx;
+  uint16_t buffIdx;
+  uint16_t sendBuffIdx;
+  HAL_StatusTypeDef status;
 //	  	DIR* dp;			/* Pointer to the open directory object */
 //	  	FILINFO* fno;		/* Pointer to file information to return */
 
@@ -1778,20 +1777,54 @@ void StartSdReadTask(void const * argument)
 	  else
 	  {
 		  /*## Read data from the text file ###########################*/
-		  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
-
-		  if((bytesread == 0) || (res != FR_OK))
+//		  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
+		  fileSize = MyFile.obj.objsize;
+		  readDataIdx = 0;
+		  buffIdx = 0;
+		  do
 		  {
-			/* 'STM32.TXT' file Read or EOF Error */
-			Error_Handler();
-		  }
-		  else
-		  {
-			/*## Close the open text file #############################*/
-			f_close(&MyFile);
+			  readSize = ((fileSize - readDataIdx) > _MAX_SS)? _MAX_SS: fileSize - readDataIdx;
+			  res = f_read(&MyFile, &workBuffer[buffIdx], readSize, (UINT*)&bytesread);
+			  if((bytesread == 0) || (res != FR_OK))
+			  {
+				/* 'STM32.TXT' file Read or EOF Error */
+				Error_Handler();
+			  }
+			  else
+			  {
 
-			HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-		  }
+			  }
+			  buffIdx += readSize;
+			  if(buffIdx > _MAX_SS)
+			  {
+				  buffIdx = 0;
+				  sendBuffIdx = _MAX_SS;
+			  }
+			  else
+			  {
+				  buffIdx = _MAX_SS;
+				  sendBuffIdx = 0;
+			  }
+			  do
+			  {
+				  status = HAL_UART_Transmit(&huart6, &workBuffer[sendBuffIdx], readSize, 100);
+			  } while(status == HAL_BUSY);
+			  if(status != HAL_OK){
+				  Error_Handler();
+			  }
+			  readDataIdx += readSize;
+		  } while(readDataIdx < fileSize);
+//		  if((bytesread == 0) || (res != FR_OK))
+//		  {
+//			/* 'STM32.TXT' file Read or EOF Error */
+//			Error_Handler();
+//		  }
+//		  else
+//		  {
+		  /*## Close the open text file #############################*/
+		  f_close(&MyFile);
+		  HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+//		  }
 	  }
 	  osDelay(1);
   }
@@ -1810,12 +1843,7 @@ void StartSdWriteTask(void const * argument)
   /* USER CODE BEGIN StartSdWriteTask */
   FRESULT res;                                          /* FatFs function common result code */
   uint32_t byteswritten;                     			/* File write/read counts */
-//  char txtChar[] = ".txt";
-//  uint8_t test;
   char tmpFileName[]  = "1234567890\0";
-//  char tmpFileName2[] = "Stm_05.txt\0";
-//  uint8_t tmpWriteBuffSel;
-//  uint16_t tmpwriteSize;
 
   osSemaphoreWait(sdWriteBinarySemHandle, 0);
 
@@ -1826,9 +1854,6 @@ void StartSdWriteTask(void const * argument)
 
 	tickRec[0] = HAL_GetTick();
 
-//	tmpWriteBuffSel = writeBuffSel;
-//	tmpwriteSize = writeSize;
-//	strncpy(tmpFileName, (char*)recvBuff[tmpWriteBuffSel], 10);
 	strncpy(tmpFileName, (char*)&workBuffer[writedataIdx], 10);
 	if(strstr(tmpFileName, ".txt") != NULL)
 	{
@@ -1838,7 +1863,6 @@ void StartSdWriteTask(void const * argument)
 	}
 	else
 	{
-//		strcpy(fileName, tmpFileName2);
 		res = f_open(&MyFile, fileName, FA_OPEN_APPEND | FA_WRITE);
 	}
 	if(res != FR_OK)
@@ -1850,13 +1874,8 @@ void StartSdWriteTask(void const * argument)
 	{
 	  /*## Write data to the text file ################################*/
 	  tickRec[1] = HAL_GetTick();
-//	  res = f_write(&MyFile, recvBuff[tmpWriteBuffSel], tmpwriteSize, (void *)&byteswritten);
 	  res = f_write(&MyFile, &workBuffer[writedataIdx], writeSize, (void*)&byteswritten);
 	  tickRec[2] = HAL_GetTick();
-//	  if(writeBuffSel == 1)
-//	  {
-//		  test = 1;
-//	  }
 	  if((byteswritten == 0) || (res != FR_OK))
 	  {
 		/* 'STM32.TXT' file Write or EOF Error */
