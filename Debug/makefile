@@ -40,6 +40,9 @@ default.size.stdout \
 OBJDUMP_LIST += \
 F746DiscoFatfsSDwithRTOS.list \
 
+OBJCOPY_BIN += \
+F746DiscoFatfsSDwithRTOS.bin \
+
 
 # All Target
 all: F746DiscoFatfsSDwithRTOS.elf secondary-outputs
@@ -60,12 +63,17 @@ F746DiscoFatfsSDwithRTOS.list: $(EXECUTABLES)
 	@echo 'Finished building: $@'
 	@echo ' '
 
+F746DiscoFatfsSDwithRTOS.bin: $(EXECUTABLES)
+	arm-none-eabi-objcopy  -O binary $(EXECUTABLES) "F746DiscoFatfsSDwithRTOS.bin"
+	@echo 'Finished building: $@'
+	@echo ' '
+
 # Other Targets
 clean:
 	-$(RM) *
 	-@echo ' '
 
-secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST)
+secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST) $(OBJCOPY_BIN)
 
 .PHONY: all clean dependents
 .SECONDARY:

@@ -25,9 +25,9 @@ main.c:1364:13:MX_FMC_Init	40	static
 main.c:1415:13:MX_GPIO_Init	72	static
 main.c:1617:6:HAL_GPIO_EXTI_Callback	16	static
 main.c:1629:6:HAL_UART_RxCpltCallback	24	static
-main.c:1685:6:StartDefaultTask	16	static
-main.c:1745:6:StartSdReadTask	32	static
-main.c:1841:6:StartSdWriteTask	40	static
-main.c:1903:6:StartSdFormatTask	24	static
-main.c:1937:6:HAL_TIM_PeriodElapsedCallback	16	static
-main.c:1954:6:Error_Handler	4	static
+main.c:1684:6:StartDefaultTask	16	static
+main.c:1744:6:StartSdReadTask	32	static
+main.c:1825:6:StartSdWriteTask	40	static
+main.c:1887:6:StartSdFormatTask	24	static
+main.c:1921:6:HAL_TIM_PeriodElapsedCallback	16	static
+main.c:1938:6:Error_Handler	4	static

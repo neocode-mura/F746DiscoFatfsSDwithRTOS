@@ -95,7 +95,7 @@ FATFS SDFatFs;  /* File system object for SD card logical drive */
 FIL MyFile;     /* File object */
 char SDPath[4]; /* SD card logical drive path */
 uint8_t workBuffer[2*_MAX_SS];
-uint8_t buffSel;
+//uint8_t buffSel;
 uint16_t dataIdx;
 uint16_t writeSize;
 uint16_t writedataIdx;
@@ -198,7 +198,7 @@ int main(void)
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
   b1PushCounter = 0;
-  buffSel = 0;
+//  buffSel = 0;
   dataIdx = 0;
   /* USER CODE END 2 */
 
@@ -1665,7 +1665,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 			osSemaphoreRelease(sdWriteBinarySemHandle);
 		}
 
-
 		do
 		{
 			retStatus = HAL_UART_Receive_IT(&huart6, &recvData, 1);
@@ -1747,15 +1746,12 @@ void StartSdReadTask(void const * argument)
   /* USER CODE BEGIN StartSdReadTask */
   FRESULT res;       	/* FatFs function common result code */
   uint32_t bytesread;	/* File write/read counts */
-//  uint8_t rtext[100];	/* File read buffer */
   uint16_t fileSize;
   uint16_t readSize;
   uint16_t readDataIdx;
   uint16_t buffIdx;
   uint16_t sendBuffIdx;
   HAL_StatusTypeDef status;
-//	  	DIR* dp;			/* Pointer to the open directory object */
-//	  	FILINFO* fno;		/* Pointer to file information to return */
 
   osSemaphoreWait(sdReadBinarySemHandle, 0);
 
@@ -1764,10 +1760,6 @@ void StartSdReadTask(void const * argument)
   {
 	  osSemaphoreWait(sdReadBinarySemHandle, osWaitForever);
 
-//	  res = dir_find (	/* FR_OK(0):succeeded, !=0:error */
-//	  	 dp			/* Pointer to the directory object with the file name */
-//
-//	  );
 	  /*## Open the text file object with read access ###############*/
 	  if(f_open(&MyFile, "STM32.TXT", FA_READ) != FR_OK)
 	  {
@@ -1777,14 +1769,16 @@ void StartSdReadTask(void const * argument)
 	  else
 	  {
 		  /*## Read data from the text file ###########################*/
-//		  res = f_read(&MyFile, rtext, sizeof(rtext), (UINT*)&bytesread);
 		  fileSize = MyFile.obj.objsize;
 		  readDataIdx = 0;
 		  buffIdx = 0;
+		  tickRec[3] = HAL_GetTick();
 		  do
 		  {
 			  readSize = ((fileSize - readDataIdx) > _MAX_SS)? _MAX_SS: fileSize - readDataIdx;
+			  tickRec[5] = HAL_GetTick();
 			  res = f_read(&MyFile, &workBuffer[buffIdx], readSize, (UINT*)&bytesread);
+			  tickRec[6] = HAL_GetTick();
 			  if((bytesread == 0) || (res != FR_OK))
 			  {
 				/* 'STM32.TXT' file Read or EOF Error */
@@ -1807,24 +1801,14 @@ void StartSdReadTask(void const * argument)
 			  }
 			  do
 			  {
-				  status = HAL_UART_Transmit(&huart6, &workBuffer[sendBuffIdx], readSize, 100);
+			  	  status = HAL_UART_Transmit_IT(&huart6, &workBuffer[sendBuffIdx], readSize);
 			  } while(status == HAL_BUSY);
-			  if(status != HAL_OK){
-				  Error_Handler();
-			  }
 			  readDataIdx += readSize;
 		  } while(readDataIdx < fileSize);
-//		  if((bytesread == 0) || (res != FR_OK))
-//		  {
-//			/* 'STM32.TXT' file Read or EOF Error */
-//			Error_Handler();
-//		  }
-//		  else
-//		  {
+		  tickRec[4] = HAL_GetTick();
 		  /*## Close the open text file #############################*/
 		  f_close(&MyFile);
 		  HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-//		  }
 	  }
 	  osDelay(1);
   }
