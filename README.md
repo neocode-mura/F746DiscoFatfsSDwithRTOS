@@ -1,3 +1,6 @@
 # F746DiscoFatfsSDwithRTOS
 
-neocode.jp - "STM32F746DiscoでSTM32CubeIDEプロジェクトを通じてSDカードを扱う"で紹介した内容の
+neocode.jp - "STM32F746DiscoでSTM32CubeIDEプロジェクトを通じてSDカードを扱う"で紹介した内容のファイル一式です。
+
+STマイクロ STM32F746Discoに実装されているマイクロSDカードスロットを使用してマイクロSDカードのRead/Writeをしています。
+
